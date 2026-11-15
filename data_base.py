@@ -1,6 +1,6 @@
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 import shutil
 import os
 import sys
@@ -8,12 +8,15 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from PySide6 import QtWidgets
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice
 
 
-#db_path_default = r"\\h17des02071\mInput\NHÀ MỚI\NHẬP KHẨU 1\IX.KHAC\Back up Thắng\Data_base\assets.db"
-db_path_default = r"assets.db"
+db_path_default = r"\\h17des02071\mInput\NHÀ MỚI\NHẬP KHẨU 1\IX.KHAC\Back up Thắng\Data_base\assets.db"
+#db_path_default = r"assets.db"
 #db_path_default = r"\\DESKTOP-1S9FC0J\data_base\assets.db"
 #pyinstaller --onefile --noconsole --icon=avatar_app.ico --name "Asset Management" main.py
 
@@ -1280,19 +1283,130 @@ def add_table_from_qtable(doc, qtable, after_paragraph=None):
     except Exception as e:
         messagebox.showerror("Lỗi", f"\n{str(e)}")
 
+def _collect_unique_staff_names(qtable1, qtable2):
+    names = []
+    seen = set()
+    for qt in (qtable1, qtable2):
+        if qt is None:
+            continue
+        for i in range(qt.rowCount()):
+            item = qt.item(i, 1)
+            name = item.text().strip() if item and item.text() else ""
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
+def _replace_markers_in_paragraph(para, replacements):
+    if not any(key in para.text for key in replacements):
+        return
+    for run in para.runs:
+        for key, val in replacements.items():
+            if key in run.text:
+                run.text = run.text.replace(key, val)
+    # Fallback nếu Word tách marker qua nhiều run
+    if any(key in para.text for key in replacements):
+        text = para.text
+        for key, val in replacements.items():
+            text = text.replace(key, val)
+        para.text = text
+
+
+def fill_date_placeholders(doc, dt=None):
+    if dt is None:
+        dt = datetime.now()
+    replacements = {
+        "{{DAY}}": f"{dt.day:02d}",
+        "{{MONTH}}": f"{dt.month:02d}",
+        "{{YEAR}}": f"{dt.year}",
+    }
+
+    for para in doc.paragraphs:
+        _replace_markers_in_paragraph(para, replacements)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    _replace_markers_in_paragraph(para, replacements)
+
+
+def _format_sign_cell(cell, text, font_name="Times New Roman", font_pt=13, bold=True, italic=True):
+    # Xóa các paragraph thừa trong ô, giữ lại paragraph đầu tiên
+    for p in list(cell.paragraphs)[1:]:
+        p._element.getparent().remove(p._element)
+    para = cell.paragraphs[0]
+    para.clear()
+    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = para.add_run(text)
+    run.bold = bold
+    run.italic = italic
+    run.font.name = font_name
+    run.font.size = Pt(font_pt)
+    rPr = run._r.get_or_add_rPr()
+    rFonts = rPr.find(qn("w:rFonts"))
+    if rFonts is not None:
+        rFonts.set(qn("w:cs"), font_name)
+        rFonts.set(qn("w:eastAsia"), font_name)
+
+
+def fill_sign_placeholder_in_tables(doc, qtable1, qtable2):
+    names = _collect_unique_staff_names(qtable1, qtable2)
+
+    for table in doc.tables:
+        target = None
+        for r_idx, row in enumerate(table.rows):
+            for c_idx, cell in enumerate(row.cells):
+                if "{{SIGN}}" in cell.text:
+                    target = (r_idx, c_idx)
+                    break
+            if target is not None:
+                break
+
+        if target is None:
+            continue
+
+        row_idx, col_idx = target
+        base_row = table.rows[row_idx]
+        col_widths = [c.width for c in base_row.cells]
+        space_height = Pt(57.5)
+        if row_idx > 0 and table.rows[row_idx - 1].height is not None:
+            space_height = table.rows[row_idx - 1].height
+
+        first_cell = base_row.cells[col_idx]
+        _format_sign_cell(first_cell, names[0] if names else "")
+
+        anchor_tr = base_row._tr
+        for name in names[1:]:
+            space_row = table.add_row()
+            space_row.height = space_height
+            for j, w in enumerate(col_widths):
+                if w is not None:
+                    space_row.cells[j].width = w
+                space_row.cells[j].text = ""
+
+            name_row = table.add_row()
+            if base_row.height is not None:
+                name_row.height = base_row.height
+            for j, w in enumerate(col_widths):
+                if w is not None:
+                    name_row.cells[j].width = w
+                if j == col_idx:
+                    _format_sign_cell(name_row.cells[j], name)
+                else:
+                    name_row.cells[j].text = ""
+
+            # Chèn ngay sau dòng tên trước đó (giữ nguyên thứ tự các dòng sau trong bảng)
+            anchor_tr.addnext(space_row._tr)
+            space_row._tr.addnext(name_row._tr)
+            anchor_tr = name_row._tr
+
+    return names
+
+
 def add_sign_table(doc, qtable1, qtable2, after_paragraph=None):
     try:
-        names = []
-
-        for i in range(qtable1.rowCount()):
-            item = qtable1.item(i, 1)  # cột thứ 2: Tên cán bộ
-            if item and item.text():
-                names.append(item.text())
-
-        for i in range(qtable2.rowCount()):
-            item = qtable2.item(i, 1)
-            if item and item.text():
-                names.append(item.text())
+        names = _collect_unique_staff_names(qtable1, qtable2)
 
         if not names:
             return None
