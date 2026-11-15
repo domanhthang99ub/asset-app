@@ -31,7 +31,7 @@ from data_base import (assign_assets, return_assets, search_assets_of_staff, sea
                        search_serial_number_of_staff, export_assets_assignments_to_excel,
                        import_assets_assignments_from_excel,export_assets_of_staffs_to_excel,
                        export_two_tables_to_excel, import_two_tables_from_excel_to_widgets,add_table_from_qtable,
-                       add_sign_table)
+                       add_sign_table, fill_date_placeholders, fill_sign_placeholder_in_tables)
 from data_base import (search_asset_assignments_id_and_handover_documents_id, add_handover_documents,
                        add_handover_document_to_assignment)
 
@@ -3208,6 +3208,9 @@ class asset_assignments_window(QWidget):
         try:
             doc = Document("mau_bienban.docx")
 
+            # Tự động điền ngày tháng năm hiện tại vào {{DAY}}, {{MONTH}}, {{YEAR}}
+            fill_date_placeholders(doc)
+
             # tìm placeholder {{TABLE1}}, {{TABLE2}}, {{SIGN}}
             for para in doc.paragraphs:
                 if "{{TABLE1}}" in para.text:
@@ -3222,6 +3225,9 @@ class asset_assignments_window(QWidget):
                     para.text = ""
                     # chèn bảng chữ ký
                     add_sign_table(doc, self.table1, self.table2, after_paragraph=para)
+
+            # Điền tên người nhận/trả vào ô {{SIGN}} trong bảng chữ ký và chèn thêm dòng nếu có nhiều người
+            fill_sign_placeholder_in_tables(doc, self.table1, self.table2)
 
             # --- tạo tên file mặc định ---
             today = datetime.now().strftime("%Y-%m-%d")
